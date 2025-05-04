@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+
+<head>
+    <meta charset="utf-8" />
+    <title>台灣互動地圖（點縣市顯示鄉鎮）</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+        }
+
+        #map {
+            width: 600px;
+            height: 600px;
+            margin-bottom: 10px;
+            border: 1px solid #ccc;
+        }
+
+        button {
+            padding: 6px 12px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+    </style>
+</head>
+
+<body>
+    <h2>台灣縣市互動地圖（點縣市顯示鄉鎮）</h2>
+    <div id="map"></div>
+    <button onclick="resetMap()">🔄 回到全台視角</button>
+
+    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+    <script>
+        let citydata = null;
+        let towndata = null;
+        let activeLayer = null;
+        let townshipLayer = null;
+
+        const map = L.map('map', {
+            center: [23.7, 121],
+            zoom: 7,
+            dragging: false,
+            scrollWheelZoom: false,
+            doubleClickZoom: false,
+            boxZoom: false,
+            keyboard: false,
+            zoomControl: false,
+            touchZoom: false
+        });
+
+        L.tileLayer('https://stamen-tiles.a.ssl.fastly.net/watercolor/{z}/{x}/{y}.jpg', {
+            attribution: '© OpenStreetMap 貢獻者'
+        }).addTo(map);
+
+        // 鄉鎮圖層先建立空容器
+        townshipLayer = L.geoJSON(null, {
+            onEachFeature: (feature, layer) => {
+                const town = feature.properties.town || "未知鄉鎮";
+                layer.bindPopup(`鄉鎮：${town}`);
+
+                layer.on('click', () => {
+                    townshipLayer.resetStyle(); // 清除其他高亮
+                    layer.setStyle({
+                        fillColor: "orange",
+                        fillOpacity: 0.8
+                    });
+                    layer.bringToFront();
+                });
+            },
+            style: {
+                color: "#888",
+                weight: 1,
+                fillColor: "#b2e2f2",
+                fillOpacity: 0.4
+            }
+        }).addTo(map);
+
+        const countyLayer = L.geoJSON(null, {
+            onEachFeature: (feature, layer) => {
+                const name = feature.properties.county || "未知縣市";
+                layer.bindPopup(`縣市：${name}`);
+
+                layer.on('click', () => {
+                    const selectedCounty = feature.properties.county;
+
+
+                    // 高亮目前點選的縣市
+                    if (activeLayer) {
+                        countyLayer.resetStyle(activeLayer);
+                        specialcountyLayer.resetStyle(activeLayer); // ✅ 同時 reset 特殊圖層
+                    }
+                    layer.setStyle({ fillColor: "#ffcc00", fillOpacity: 0.9 });
+                    layer.bringToFront();
+                    activeLayer = layer;
+
+
+                    // 聚焦
+                    if (selectedCounty === '高雄市') {
+                        map.setView([22.83, 120.3], 9); // 高雄市的中心點與適當 zoom
+                    } else {
+                        map.fitBounds(layer.getBounds(), { maxZoom: 10 });
+                    }
+
+
+                    // 顯示鄉鎮
+                    showTownshipsByCounty(selectedCounty);
+                });
+            },
+            style: {
+                color: "#555",
+                weight: 1,
+                fillColor: "#99ccff",
+                fillOpacity: 0.3
+            }
+        }).addTo(map);
+
+        const specialcountyLayer = L.geoJSON(null, {
+            onEachFeature: (feature, layer) => {
+                const name = feature.properties.county || "未知縣市";
+                layer.bindPopup(`縣市：${name}`);
+
+                layer.on('click', () => {
+                    const selectedCounty = feature.properties.county;
+
+
+                    // 高亮目前點選的縣市
+                    if (activeLayer) {
+                        countyLayer.resetStyle(activeLayer);
+                        specialcountyLayer.resetStyle(activeLayer); // ✅ 同時 reset 特殊圖層
+                    }
+                    layer.setStyle({ fillColor: "#ffcc00", fillOpacity: 0.9 });
+                    layer.bringToFront();
+                    activeLayer = layer;
+
+
+                    // 聚焦
+                    if (selectedCounty === '高雄市') {
+                        map.setView([22.83, 120.3], 9); // 高雄市的中心點與適當 zoom
+                    } else {
+                        map.fitBounds(layer.getBounds(), { maxZoom: 10 });
+                    }
+
+
+                    // 顯示鄉鎮
+                    showTownshipsByCounty(selectedCounty);
+                });
+            },
+            style: {
+                color: "#555",
+                weight: 1,
+                fillColor: "#99ccff",
+                fillOpacity: 0.3
+            }
+        }).addTo(map);
+        function resetMap() {
+            if (activeLayer) {
+                countyLayer.resetStyle(activeLayer);
+                specialcountyLayer.resetStyle(activeLayer); // ✅ 加上這行
+                activeLayer = null;
+            }
+            townshipLayer.clearLayers();
+            map.setView([23.7, 121], 7);
+        }
+
+
+        function showTownshipsByCounty(countyName) {
+            if (!towndata) return;
+            const filtered = towndata.features.filter(f => f.properties.town.startsWith(countyName));
+            townshipLayer.clearLayers();
+            townshipLayer.addData(filtered);
+        }
+
+        // 載入縣市資料（台北市最後加）
+        fetch('taiwan_counties.geojson')
+            .then(res => res.json())
+            .then(data => {
+                const reordered = [
+                    ...data.features.filter(f =>
+                        !['臺北市', '嘉義市'].includes(f.properties.county)
+                    ),
+                ];
+                const spcrecorded = [
+                    ...data.features.filter(f => ['臺北市', '嘉義市'].includes(f.properties.county))
+                ]
+                citydata = { ...data, features: reordered };
+                specialcountyLayer.addData(spcrecorded)
+                countyLayer.addData(reordered);
+            });
+
+        // 載入鄉鎮資料一次備好
+        fetch('taiwan_townships.geojson')
+            .then(res => res.json())
+            .then(data => {
+                towndata = data;
+            });
+    </script>
+</body>
+
+</html>

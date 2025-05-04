@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+
+<head>
+    <meta charset="utf-8" />
+    <title>台灣互動地圖（點縣市顯示鄉鎮，並鎖定互動區域）</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+        }
+
+        #map {
+            width: 600px;
+            height: 600px;
+            margin-bottom: 10px;
+            border: 1px solid #ccc;
+            position: relative;
+        }
+
+        #mapLoadingOverlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(255, 255, 255, 0.75);
+            z-index: 500;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 20px;
+            font-weight: bold;
+            pointer-events: none;
+        }
+
+        .spinner {
+            animation: blink 1s infinite;
+        }
+
+        @keyframes blink {
+            0% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.3;
+            }
+
+            100% {
+                opacity: 1;
+            }
+        }
+
+        #selectedArea {
+            font-size: 18px;
+            font-weight: bold;
+            margin-bottom: 8px;
+        }
+
+        button {
+            padding: 6px 12px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+    </style>
+</head>
+
+<body>
+    <h2>台灣縣市互動地圖（點縣市顯示鄉鎮，並鎖定互動區域）</h2>
+    <p id="selectedArea">目前選擇：無</p>
+    <div id="map">
+        <div id="mapLoadingOverlay">
+            <div class="spinner" id="load">縣市資料載入中...</div>
+        </div>
+    </div>
+    <button onclick="resetMap()">🔄 回到全台視角</button>
+
+    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+    <script>
+        let citydata = null;//
+        let originalCityData = null;
+        let towndata = null;//
+        let activeLayer = null;
+        let lockedCountyName = null;
+
+        let countyLoaded = false;
+        let townshipLoaded = false;
+
+        function hideLoading() {
+            document.getElementById("mapLoadingOverlay").style.display = "none";
+        }
+
+        function checkAllLoaded() {
+            if (countyLoaded) {
+                load.innerText = "鄉鎮市區資料載入中"
+            }
+            if (countyLoaded && townshipLoaded) {
+                hideLoading();
+            }
+        }
+
+        const countyViewSettings = {
+            "臺北市": { center: [25.0375, 121.5637], zoom: 11 },
+            "新北市": { center: [25.0169, 121.4628], zoom: 10 },
+            "桃園市": { center: [24.9937, 121.3009], zoom: 10 },
+            "臺中市": { center: [24.1477, 120.6736], zoom: 10 },
+            "臺南市": { center: [23.0000, 120.2000], zoom: 10 },
+            "高雄市": { center: [22.6273, 120.3014], zoom: 9 },
+            "基隆市": { center: [25.1276, 121.7392], zoom: 11 },
+            "新竹市": { center: [24.8039, 120.9647], zoom: 11 },
+            "嘉義市": { center: [23.4801, 120.4491], zoom: 11 },
+            "新竹縣": { center: [24.8383, 121.0086], zoom: 10 },
+            "苗栗縣": { center: [24.5602, 120.8214], zoom: 10 },
+            "彰化縣": { center: [24.0685, 120.5578], zoom: 10 },
+            "南投縣": { center: [23.9609, 120.9719], zoom: 10 },
+            "雲林縣": { center: [23.7074, 120.4313], zoom: 10 },
+            "嘉義縣": { center: [23.4523, 120.2555], zoom: 10 },
+            "屏東縣": { center: [22.5510, 120.5485], zoom: 9 },
+            "宜蘭縣": { center: [24.7021, 121.7378], zoom: 10 },
+            "花蓮縣": { center: [23.9872, 121.6015], zoom: 9 },
+            "臺東縣": { center: [22.7583, 121.1444], zoom: 9 },
+            "澎湖縣": { center: [23.5655, 119.6151], zoom: 10 },
+            "金門縣": { center: [24.4344, 118.3171], zoom: 11 },
+            "連江縣": { center: [26.1608, 119.9488], zoom: 11 }
+        };
+
+        const map = L.map('map', {
+            center: [23.7, 121],
+            zoom: 7,
+            dragging: false,
+            scrollWheelZoom: false,
+            doubleClickZoom: false,
+            boxZoom: false,
+            keyboard: false,
+            zoomControl: false,
+            touchZoom: false
+        });
+
+        L.tileLayer('https://stamen-tiles.a.ssl.fastly.net/watercolor/{z}/{x}/{y}.jpg', {
+            attribution: '© OpenStreetMap 貢獻者'
+        }).addTo(map);
+
+        const townshipLayer = L.geoJSON(null, {
+            onEachFeature: (feature, layer) => {
+                const town = feature.properties.town || "未知鄉鎮";
+                layer.bindPopup(`鄉鎮：${town}`);
+                layer.on('click', () => {
+                    townshipLayer.resetStyle();
+                    layer.setStyle({ fillColor: "orange", fillOpacity: 0.8 });
+                    layer.bringToFront();
+                });
+            },
+            style: {
+                color: "#888",
+                weight: 1,
+                fillColor: "#b2e2f2",
+                fillOpacity: 0.4
+            }
+        }).addTo(map);
+
+        const countyLayer = L.geoJSON(null, {
+            onEachFeature: (feature, layer) => {
+                const name = feature.properties.county || "未知縣市";
+                layer.on('click', () => {
+                    const selectedCounty = feature.properties.county;
+                    if (lockedCountyName && selectedCounty !== lockedCountyName) return;
+
+                    updateSelectedArea(selectedCounty);
+                    resetActiveLayer();
+
+                    layer.setStyle({ fillColor: "#ffcc00", fillOpacity: 0.9 });
+                    layer.bringToFront();
+                    activeLayer = layer;
+
+                    const setting = countyViewSettings[selectedCounty];
+                    if (setting) {
+                        map.setView(setting.center, setting.zoom);
+                    } else {
+                        map.fitBounds(layer.getBounds(), { maxZoom: 10 });
+                    }
+
+                    showTownshipsByCounty(selectedCounty);
+                    highlightByName(['臺中市清水區', '臺北市大安區', '南投縣仁愛鄉']);
+                    lockedCountyName = selectedCounty;
+                });
+            },
+            style: {
+                color: "#555",
+                weight: 1,
+                fillColor: "#99ccff",
+                fillOpacity: 0.3
+            }
+        }).addTo(map);
+
+        function resetActiveLayer() {
+            if (activeLayer) {
+                countyLayer.resetStyle(activeLayer);
+                activeLayer = null;
+            }
+        }
+
+        function highlightByName(input) {
+            const names = Array.isArray(input) ? input : [input];
+            const isCounty = names.every(name =>
+                citydata && citydata.features.some(f => f.properties.county === name)
+            );
+
+            if (isCounty) {
+                countyLayer.eachLayer(layer => {
+                    const name = layer.feature.properties.county;
+                    if (names.includes(name)) {
+                        countyLayer.resetStyle(layer);
+                        layer.setStyle({
+                            fillColor: "red",
+                            fillOpacity: 0.8,
+                            color: "#000",
+                            weight: 2
+                        });
+                        layer.bringToFront();
+                        layer.openPopup();
+                    } else {
+                        countyLayer.resetStyle(layer);
+                    }
+                });
+            }
+            else {
+                townshipLayer.eachLayer(layer => {
+                    const name = layer.feature.properties.town;
+                    if (names.includes(name)) {
+                        townshipLayer.resetStyle(layer);
+                        layer.setStyle({
+                            fillColor: "blue",
+                            fillOpacity: 0.8,
+                            color: "#000",
+                            weight: 2
+                        });
+                        layer.bringToFront();
+                        layer.openPopup();
+                    } else {
+                        townshipLayer.resetStyle(layer);
+                    }
+                });
+            }
+        }
+
+        function resetMap() {
+            resetActiveLayer();
+            townshipLayer.clearLayers();
+            document.getElementById("selectedArea").textContent = "目前選擇：無";
+            map.setView([23.7, 121], 7);
+            lockedCountyName = null;
+
+            if (originalCityData) {
+                countyLayer.clearLayers();
+                const topCities = ['臺北市', '嘉義市'];
+                const sorted = [
+                    ...originalCityData.features.filter(f => !topCities.includes(f.properties.county)),
+                    ...originalCityData.features.filter(f => topCities.includes(f.properties.county))
+                ];
+                citydata = { ...originalCityData, features: sorted };
+                countyLayer.addData(sorted);
+                highlightByName(['臺中市', '臺北市', '南投縣']);
+            }
+        }
+
+        function updateSelectedArea(name) {
+            document.getElementById("selectedArea").textContent = `目前選擇：${name}`;
+        }
+
+        function showTownshipsByCounty(countyName) {
+            if (!towndata) return;
+            const filtered = towndata.features.filter(f => f.properties.town.startsWith(countyName));
+            townshipLayer.clearLayers();
+            townshipLayer.addData(filtered);
+        }
+
+        fetch('taiwan_counties.geojson')
+            .then(res => res.json())
+            .then(data => {
+                console.log('縣市資料加載完成!!!!');
+                console.log(data);
+
+                originalCityData = data;
+                const topCities = ['臺北市', '嘉義市'];
+                const sorted = [
+                    ...data.features.filter(f => !topCities.includes(f.properties.county)),
+                    ...data.features.filter(f => topCities.includes(f.properties.county))
+                ];
+                citydata = { ...data, features: sorted };
+                countyLayer.addData(sorted);
+                highlightByName(['臺中市', '臺北市', '南投縣']);
+                countyLoaded = true;
+                checkAllLoaded();
+            });
+
+        fetch('taiwan_townships.geojson')
+            .then(res => res.json())
+            .then(data => {
+                console.log('鄉鎮市區資料加載完成!!!!');
+                console.log(data);
+
+                towndata = data;
+                townshipLoaded = true;
+                checkAllLoaded();
+            });
+    </script>
+</body>
+
+</html>
